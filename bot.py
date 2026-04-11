@@ -22,10 +22,20 @@ logger = logging.getLogger(__name__)
 def get_sheet():
     from google.oauth2.service_account import Credentials
     import gspread
-    creds = Credentials.from_service_account_file(
-        os.path.expanduser('~/telegram_bot/google_credentials.json'),
-        scopes=['https://www.googleapis.com/auth/spreadsheets']
-    )
+    import json
+    # Try environment variable first (for Railway), then local file
+    creds_json = os.environ.get('GOOGLE_CREDENTIALS')
+    if creds_json:
+        creds_info = json.loads(creds_json)
+        creds = Credentials.from_service_account_info(
+            creds_info,
+            scopes=['https://www.googleapis.com/auth/spreadsheets']
+        )
+    else:
+        creds = Credentials.from_service_account_file(
+            os.path.expanduser('~/telegram_bot/google_credentials.json'),
+            scopes=['https://www.googleapis.com/auth/spreadsheets']
+        )
     return gspread.authorize(creds).open_by_url(SHEET_URL)
 
 
