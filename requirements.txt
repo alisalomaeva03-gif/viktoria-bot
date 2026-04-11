@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]
+gspread
+google-api-python-client
+gspread-formatting
+openai-whisper
