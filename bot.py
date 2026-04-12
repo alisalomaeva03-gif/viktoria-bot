@@ -82,6 +82,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if category == 'mac':
         await handle_mac_command(update, text.lower())
+        return
 
     elif category == 'idea':
         save_to_sheet('Идеи', [now, text, '', '💡 Новая', ''])
