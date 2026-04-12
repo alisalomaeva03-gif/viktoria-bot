@@ -134,6 +134,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_mac_command(update, text):
+    if os.name != 'posix' or not os.path.exists('/usr/bin/osascript'):
+        await update.message.reply_text("🖥 Mac-команды работают только когда бот запущен на твоём компьютере. Сейчас бот на сервере — эта функция недоступна.")
+        return
+
     if 'скриншот' in text:
         path = os.path.expanduser("~/Desktop/screenshot.png")
         subprocess.run(["screencapture", "-x", path])
