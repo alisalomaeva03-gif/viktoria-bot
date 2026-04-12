@@ -202,53 +202,7 @@ async def handle_mac_command(update, text):
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎙 Слушаю...")
-
-    if update.message.voice:
-        file = await update.message.voice.get_file()
-        ext = "ogg"
-    elif update.message.audio:
-        file = await update.message.audio.get_file()
-        ext = "mp3"
-    elif update.message.video:
-        file = await update.message.video.get_file()
-        ext = "mp4"
-    else:
-        await update.message.reply_text("❌ Не понял формат")
-        return
-
-    path = os.path.expanduser(f"~/telegram_bot/audio_temp.{ext}")
-    await file.download_to_drive(path)
-
-    try:
-        import whisper
-        model = whisper.load_model("base")
-        result = model.transcribe(path, language="ru")
-        text = result["text"].strip()
-
-        # Classify and save
-        now = datetime.now().strftime('%d.%m.%Y %H:%M')
-        category = classify(text)
-
-        save_to_sheet('Транскрипции', [now, text, ext])
-
-        if category == 'idea':
-            save_to_sheet('Идеи', [now, text, '', '💡 Новая', ''])
-            await update.message.reply_text(f"💡 Записала идею:\n_{text}_\n\nКогда внедрить?\nОтветь: срочно / на неделе / в месяце / когда-нибудь", parse_mode="Markdown")
-            context.user_data['last_idea'] = text
-            context.user_data['waiting_deadline'] = True
-        elif category == 'task':
-            save_to_sheet('Задачи', [now, text, '🆕 Новая', 'Голосовое'])
-            await update.message.reply_text(f"✅ Задача записана:\n_{text}_", parse_mode="Markdown")
-        else:
-            save_to_sheet('Заметки', [now, text])
-            await update.message.reply_text(f"📝 Записала:\n_{text}_", parse_mode="Markdown")
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-    finally:
-        if os.path.exists(path):
-            os.remove(path)
+    await update.message.reply_text("Голосовые пока не поддерживаются — напиши текстом, всё сохраню!")
 
 
 async def weekly_review(context):
