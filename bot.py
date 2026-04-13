@@ -57,6 +57,14 @@ def now_samara():
     return datetime.now(SAMARA_TZ).strftime('%d.%m.%Y %H:%M')
 
 
+# ─── Запросы о задачах ───────────────────────────────────────────────────────
+TASK_QUERY_WORDS = [
+    'какие задачи', 'список задач', 'мои задачи', 'покажи задачи',
+    'что в работе', 'задачи на сегодня', 'что надо сделать',
+    'что у меня', 'текущие задачи', 'активные задачи',
+    'покажи список', 'что там по задачам', 'задачи',
+]
+
 # ─── Классификация сообщений ─────────────────────────────────────────────────
 TASK_WORDS = [
     'надо', 'нужно', 'сделать', 'позвонить', 'написать', 'отправить',
@@ -90,10 +98,14 @@ DEADLINE_WORDS = [
 
 def classify(text: str) -> str:
     """
-    Возвращает: 'task', 'idea', 'note', 'unknown'
+    Возвращает: 'query_tasks', 'task', 'idea', 'note', 'unknown'
     'unknown' — показываем меню выбора
     """
-    t = text.lower()
+    t = text.lower().strip()
+
+    # Запрос о задачах — проверяем первым
+    if any(w in t for w in TASK_QUERY_WORDS):
+        return 'query_tasks'
 
     # Явные маркеры заметки
     if any(w in t for w in NOTE_WORDS):
@@ -129,6 +141,77 @@ def save_task(text: str) -> bool:
 def save_idea(text: str) -> bool:
     now = now_samara()
     return save_to_sheet('Идеи', [now, text, '', '💡 Новая', ''])
+
+
+def get_active_tasks() -> str:
+    """Возвращает отформатированный список активных задач"""
+    try:
+        ws   = get_sheet().worksheet('Задачи')
+        rows = [r for r in ws.get_all_values()[1:] if len(r) > 1 and r[1].strip()]
+        if not rows:
+            return "📋 Задач пока нет — напиши мне что нужно сделать!"
+
+        today = datetime.now(SAMARA_TZ).date()
+        overdue, active, new_tasks, done = [], [], [], []
+
+        for r in rows:
+            task     = r[1] if len(r) > 1 else ''
+            who      = r[2] if len(r) > 2 else ''
+            status   = r[4] if len(r) > 4 else ''
+            deadline = r[7] if len(r) > 7 else ''
+
+            if '✅' in status:
+                done.append(task)
+                continue
+
+            is_overdue = False
+            if deadline:
+                try:
+                    dl = datetime.strptime(deadline.strip(), '%d.%m.%Y').date()
+                    if dl < today:
+                        is_overdue = True
+                except Exception:
+                    pass
+
+            entry = (task, who, deadline)
+            if is_overdue or '🔴' in status:
+                overdue.append(entry)
+            elif '⚡' in status:
+                active.append(entry)
+            else:
+                new_tasks.append(entry)
+
+        now_str = datetime.now(SAMARA_TZ).strftime('%d.%m.%Y')
+        total   = len(overdue) + len(active) + len(new_tasks)
+        text    = f"📋 *Задачи на {now_str}*\n"
+        text   += f"Открытых: *{total}*  |  Завершено: *{len(done)}*\n\n"
+
+        def fmt(entries, limit=10):
+            lines = []
+            for t, who, dl in entries[:limit]:
+                line = f"  • {t[:55]}"
+                if dl:
+                    line += f" _(до {dl})_"
+                if who and who != 'Виктория':
+                    line += f" — {who}"
+                lines.append(line)
+            return "\n".join(lines)
+
+        if overdue:
+            text += f"🔴 *Просрочено ({len(overdue)}):*\n{fmt(overdue)}\n\n"
+        if active:
+            text += f"⚡ *В работе ({len(active)}):*\n{fmt(active)}\n\n"
+        if new_tasks:
+            text += f"🆕 *Новые ({len(new_tasks)}):*\n{fmt(new_tasks)}\n\n"
+
+        if not overdue and not active and not new_tasks:
+            text += "✨ Все задачи выполнены!"
+
+        return text.rstrip()
+
+    except Exception as e:
+        logger.error(f"get_active_tasks error: {e}")
+        return "❌ Не удалось загрузить задачи, попробуй ещё раз"
 
 
 def save_note(text: str) -> bool:
@@ -180,6 +263,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     category = classify(text)
+
+    if category == 'query_tasks':
+        msg = get_active_tasks()
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
 
     if category == 'task':
         ok = save_task(text)
