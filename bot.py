@@ -58,22 +58,34 @@ def now_samara():
 
 
 # ─── Слова-триггеры ───────────────────────────────────────────────────────────
-TASK_QUERY_WORDS = [
-    'какие задачи', 'список задач', 'мои задачи', 'покажи задачи',
-    'что в работе', 'задачи на сегодня', 'что надо сделать',
-    'текущие задачи', 'активные задачи', 'что там по задачам',
+
+# Ключевые слова для распознавания запросов — проверяются по отдельности,
+# чтобы работало при любом порядке слов: «какие задачи», «задачи какие», «на сегодня задачи» и т.д.
+
+# Слова-сигналы «покажи/что есть»
+QUERY_SIGNAL = [
+    'какие', 'покажи', 'список', 'все', 'мои', 'что там', 'что за',
+    'что сейчас', 'сегодня', 'на сегодня', 'текущие', 'активные',
+    'есть ли', 'что в работе', 'что надо', 'что нужно',
 ]
-IDEA_QUERY_WORDS = [
-    'мои идеи', 'список идей', 'покажи идеи', 'какие идеи',
-    'что за идеи', 'все идеи', 'идеи',
-]
-NOTE_QUERY_WORDS = [
-    'мои заметки', 'список заметок', 'покажи заметки', 'какие заметки',
-    'все заметки', 'заметки',
-]
-DELETE_TASK_WORDS  = ['удали задачу',  'удалить задачу',  'убери задачу']
+# Ключевые слова тематики
+TASK_KEYWORDS  = ['задач', 'задачи', 'задача', 'задание', 'задания']
+IDEA_KEYWORDS  = ['иде', 'идея', 'идеи']
+NOTE_KEYWORDS  = ['заметк', 'заметки', 'заметка']
+
+DELETE_TASK_WORDS  = ['удали задачу',  'удалить задачу',  'убери задачу',
+                      'удали задание', 'удалить задание', 'убери задание']
 DELETE_IDEA_WORDS  = ['удали идею',    'удалить идею',    'убери идею']
 DELETE_NOTE_WORDS  = ['удали заметку', 'удалить заметку', 'убери заметку']
+
+
+def _has_query_signal(t: str) -> bool:
+    """Есть ли в тексте слово-сигнал запроса списка."""
+    return any(w in t for w in QUERY_SIGNAL)
+
+def _has_keyword(t: str, keywords: list) -> bool:
+    """Есть ли хотя бы одно ключевое слово темы."""
+    return any(w in t for w in keywords)
 
 TASK_WORDS = [
     'надо', 'нужно', 'сделать', 'позвонить', 'написать', 'отправить',
@@ -103,12 +115,22 @@ DEADLINE_WORDS = [
 def classify(text: str) -> str:
     t = text.lower().strip()
 
+    # Удаление — проверяем первыми
     if any(w in t for w in DELETE_TASK_WORDS):  return 'delete_task'
     if any(w in t for w in DELETE_IDEA_WORDS):  return 'delete_idea'
     if any(w in t for w in DELETE_NOTE_WORDS):  return 'delete_note'
-    if any(w in t for w in TASK_QUERY_WORDS):   return 'query_tasks'
-    if any(w in t for w in IDEA_QUERY_WORDS):   return 'query_ideas'
-    if any(w in t for w in NOTE_QUERY_WORDS):   return 'query_notes'
+
+    # Запросы списков — ключевое слово темы + сигнал запроса (любой порядок)
+    if _has_keyword(t, TASK_KEYWORDS) and _has_query_signal(t):  return 'query_tasks'
+    if _has_keyword(t, IDEA_KEYWORDS) and _has_query_signal(t):  return 'query_ideas'
+    if _has_keyword(t, NOTE_KEYWORDS) and _has_query_signal(t):  return 'query_notes'
+
+    # Запрос только по ключевому слову без сигнала (например «задачи?», «заметки»)
+    if t in ('задачи', 'задачи?', 'мои задачи'):                 return 'query_tasks'
+    if t in ('идеи', 'идеи?', 'мои идеи'):                       return 'query_ideas'
+    if t in ('заметки', 'заметки?', 'мои заметки'):              return 'query_notes'
+
+    # Сохранение новой записи
     if any(w in t for w in NOTE_WORDS):         return 'note'
     if any(w in t for w in IDEA_WORDS):         return 'idea'
     if any(w in t for w in TASK_WORDS):         return 'task'
