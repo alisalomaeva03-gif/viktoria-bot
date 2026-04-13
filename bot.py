@@ -157,17 +157,15 @@ def save_file(file_type: str, name: str, description: str, file_id: str, source:
     return save_to_sheet('База',
         [now_samara(), file_type, name, description, file_id, source])
 
-def find_in_base(query: str) -> list:
-    """Ищет в листе «База» по названию или описанию."""
+def find_in_base(terms: list) -> list:
+    """Ищет в листе «База»: name/desc содержит хотя бы одно из слов запроса."""
     try:
         ws = get_sheet().worksheet('База')
-        q = query.lower().strip()
         results = []
         for r in ws.get_all_values()[1:]:
             if len(r) < 3 or not r[2].strip(): continue
-            name = r[2].lower()
-            desc = r[3].lower() if len(r) > 3 else ''
-            if q in name or q in desc:
+            haystack = (r[2] + ' ' + (r[3] if len(r) > 3 else '')).lower()
+            if any(term in haystack for term in terms):
                 results.append(r)
         return results
     except Exception as e:
@@ -177,22 +175,22 @@ def find_in_base(query: str) -> list:
 
 URL_RE = re.compile(r'https?://\S+|www\.\S+')
 
-# Триггеры поиска в базе
-FIND_BASE_TRIGGERS = [
-    'пришли ссылку', 'найди ссылку', 'дай ссылку', 'покажи ссылку',
-    'пришли файл',   'найди файл',   'дай файл',   'покажи файл',
-    'найди документ','пришли документ','пришли фото','найди фото',
-    'найди в базе',  'что есть в базе',
-]
+# Слова-сигналы поиска и слова типов (удаляются чтобы получить поисковый запрос)
+FIND_SIGNALS   = {'пришли', 'найди', 'дай', 'покажи', 'отправь', 'скинь', 'где', 'есть', 'мне'}
+BASE_TYPE_WORDS = {'ссылку', 'ссылка', 'ссылки', 'файл', 'файла', 'файлы',
+                   'документ', 'документа', 'фото', 'фотку', 'видео',
+                   'скрин', 'скриншот', 'базе', 'базу', 'базы', 'в'}
 
-def extract_find_query(text: str) -> str:
-    """Вытаскивает поисковый запрос после триггера."""
-    t = text.lower()
-    for trigger in sorted(FIND_BASE_TRIGGERS, key=len, reverse=True):
-        if trigger in t:
-            idx = t.index(trigger) + len(trigger)
-            return text[idx:].strip(' :«»"\'')
-    return ''
+def _is_find_query(t: str) -> bool:
+    """Запрос поиска в базе — независимо от порядка слов."""
+    words = set(t.split())
+    return bool(words & FIND_SIGNALS) and bool(words & BASE_TYPE_WORDS)
+
+def _extract_search_terms(text: str) -> list:
+    """Убирает служебные слова, возвращает список слов для поиска."""
+    stop = FIND_SIGNALS | BASE_TYPE_WORDS
+    terms = [w for w in text.lower().split() if w not in stop and len(w) > 1]
+    return terms
 
 
 # ─── Загрузка данных из листов ───────────────────────────────────────────────
@@ -384,35 +382,43 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown")
         return
 
-    # ── Поиск в базе ──
+    # ── Поиск в базе (независимо от порядка слов) ──
     t_low = text.lower()
-    if any(tr in t_low for tr in FIND_BASE_TRIGGERS):
-        query = extract_find_query(text)
-        if not query:
-            await update.message.reply_text(
-                "Что найти? Напиши: «пришли ссылку [название]»")
-            return
-        rows = find_in_base(query)
-        if not rows:
-            await update.message.reply_text(
-                f"🔍 Ничего не нашла по запросу «{query}».\n"
-                f"Напиши /files чтобы увидеть всё что есть.")
-            return
-        reply = f"🔍 Нашла по «{query}»:\n\n"
-        for r in rows[:5]:
-            typ  = r[1] if len(r) > 1 else ''
-            name = r[2] if len(r) > 2 else ''
-            desc = r[3] if len(r) > 3 else ''
-            date = r[0][:10] if len(r) > 0 else ''
-            # Если тип «Ссылка» — выводим саму ссылку кликабельно
-            if '🔗' in typ:
-                reply += f"🔗 [{name}]({name})"
-            else:
-                reply += f"{typ} *{name}*"
-            if desc: reply += f"\n_{desc[:80]}_"
-            reply += f" _({date})_\n\n"
-        await update.message.reply_text(reply, parse_mode="Markdown",
-                                        disable_web_page_preview=False)
+    if _is_find_query(t_low):
+        try:
+            terms = _extract_search_terms(text)
+            if not terms:
+                await update.message.reply_text(
+                    "Что найти? Например: «пришли ссылку аудит продаж»")
+                return
+            rows = find_in_base(terms)
+            if not rows:
+                await update.message.reply_text(
+                    f"🔍 Ничего не нашла по запросу «{' '.join(terms)}».\n"
+                    f"Напиши /files — увидишь всё что есть в базе.")
+                return
+            # Формируем ответ в HTML (URL не ломает форматирование)
+            reply = f"🔍 Нашла по «{' '.join(terms)}»:\n\n"
+            for r in rows[:5]:
+                typ  = r[1] if len(r) > 1 else ''
+                name = r[2] if len(r) > 2 else ''
+                desc = r[3] if len(r) > 3 else ''
+                date = r[0][:10] if len(r) > 0 else ''
+                if '🔗' in typ:
+                    # Ссылка — выводим URL как кликабельный текст
+                    safe_name = name.replace('&','&amp;').replace('<','&lt;')
+                    reply += f'🔗 <a href="{safe_name}">{safe_name[:80]}</a>'
+                else:
+                    safe_name = name.replace('&','&amp;').replace('<','&lt;')
+                    reply += f"{typ} <b>{safe_name}</b>"
+                if desc:
+                    safe_desc = desc[:80].replace('&','&amp;').replace('<','&lt;')
+                    reply += f"\n<i>{safe_desc}</i>"
+                reply += f" <i>({date})</i>\n\n"
+            await update.message.reply_text(reply, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"find query error: {e}")
+            await update.message.reply_text("❌ Ошибка при поиске, попробуй ещё раз.")
         return
 
     # ── Ссылки в тексте → спрашиваем название ──
