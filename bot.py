@@ -1,34 +1,39 @@
 #!/usr/bin/env python3
 """
-Telegram бот-ассистент Виктории — понимает естественную речь
+Бот Фунтик — умный ассистент Виктории
+Задачи / Идеи / Заметки + ежедневный дайджест в 9:00 по Самаре
 """
 
 import os
-import subprocess
+import json
 import logging
 import warnings
 warnings.filterwarnings('ignore')
-from datetime import datetime, timedelta
-from telegram import Update, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-BOT_TOKEN = "8671820769:AAE-Z9aeHvrSyyPNM6ZEAd0OvWzm3gMziuE"
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, filters, ContextTypes
+)
+
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8671820769:AAE-Z9aeHvrSyyPNM6ZEAd0OvWzm3gMziuE')
 SHEET_URL = "https://docs.google.com/spreadsheets/d/10JPsb1p9z9TrhTQ5IgdIek_mMlxyoeRFE-OTLMZhhus/edit"
+SAMARA_TZ = ZoneInfo("Europe/Samara")
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+# ─── Google Sheets ────────────────────────────────────────────────────────────
 def get_sheet():
     from google.oauth2.service_account import Credentials
     import gspread
-    import json
-    # Try environment variable first (for Railway), then local file
     creds_json = os.environ.get('GOOGLE_CREDENTIALS')
     if creds_json:
-        creds_info = json.loads(creds_json)
         creds = Credentials.from_service_account_info(
-            creds_info,
+            json.loads(creds_json),
             scopes=['https://www.googleapis.com/auth/spreadsheets']
         )
     else:
@@ -42,213 +47,317 @@ def get_sheet():
 def save_to_sheet(sheet_name, row):
     try:
         get_sheet().worksheet(sheet_name).append_row(row)
+        return True
     except Exception as e:
-        logger.error(f"Sheet error: {e}")
+        logger.error(f"Sheet error [{sheet_name}]: {e}")
+        return False
 
 
-def classify(text):
-    """Определяет что хочет пользователь по ключевым словам"""
+def now_samara():
+    return datetime.now(SAMARA_TZ).strftime('%d.%m.%Y %H:%M')
+
+
+# ─── Классификация сообщений ─────────────────────────────────────────────────
+TASK_WORDS = [
+    'надо', 'нужно', 'сделать', 'позвонить', 'написать', 'отправить',
+    'встретиться', 'купить', 'оплатить', 'подготовить', 'договориться',
+    'не забыть', 'напомни', 'поставить', 'узнать', 'проверить',
+    'запланировать', 'созвониться', 'отвезти', 'забрать', 'сдать',
+    'починить', 'разобраться', 'решить', 'завершить', 'доделать',
+    'задача', 'поставь задачу', 'запись в задачи'
+]
+
+IDEA_WORDS = [
+    'идея', 'хочу попробовать', 'а что если', 'было бы круто',
+    'можно было бы', 'думаю запустить', 'хочу создать', 'хочу сделать',
+    'придумала', 'придумал', 'интересно попробовать', 'а вдруг',
+    'запусти проект', 'хочу запустить', 'мечтаю', 'было бы здорово',
+    'а если попробовать'
+]
+
+NOTE_WORDS = [
+    'запомни', 'запиши', 'заметка', 'зафиксируй', 'сохрани',
+    'важно', 'отметь', 'на заметку', 'не забудь записать',
+    'записать мысль', 'мысль'
+]
+
+DEADLINE_WORDS = [
+    'сегодня', 'завтра', 'послезавтра', 'до ', 'к ', 'через ',
+    'в пятницу', 'в субботу', 'в воскресенье', 'в понедельник',
+    'во вторник', 'в среду', 'в четверг', 'на этой неделе', 'до конца'
+]
+
+
+def classify(text: str) -> str:
+    """
+    Возвращает: 'task', 'idea', 'note', 'unknown'
+    'unknown' — показываем меню выбора
+    """
     t = text.lower()
 
-    # Команды Mac
-    if any(w in t for w in ['открой', 'запусти', 'закрой', 'включи', 'выключи', 'скриншот',
-                              'громкость', 'батарея', 'заряд', 'спи', 'спящий', 'ссылка',
-                              'вкладк', 'играй', 'пауза', 'время', 'дата']):
-        return 'mac'
-
-    # Идеи
-    if any(w in t for w in ['идея', 'хочу попробовать', 'а что если', 'было бы круто',
-                              'можно было бы', 'думаю запустить', 'хочу создать', 'хочу сделать',
-                              'придумала', 'придумал', 'интересно попробовать']):
-        return 'idea'
-
-    # Задачи
-    if any(w in t for w in ['надо', 'нужно', 'сделать', 'позвонить', 'написать', 'отправить',
-                              'встретиться', 'купить', 'оплатить', 'подготовить', 'договориться',
-                              'не забыть', 'напомни', 'поставить', 'узнать', 'проверить']):
-        return 'task'
-
-    # Заметки
-    if any(w in t for w in ['запомни', 'запиши', 'заметка', 'зафиксируй', 'сохрани']):
+    # Явные маркеры заметки
+    if any(w in t for w in NOTE_WORDS):
         return 'note'
 
+    # Явные маркеры идеи
+    if any(w in t for w in IDEA_WORDS):
+        return 'idea'
+
+    # Явные маркеры задачи
+    if any(w in t for w in TASK_WORDS):
+        return 'task'
+
+    # Дедлайн в тексте → скорее задача
+    if any(w in t for w in DEADLINE_WORDS):
+        return 'task'
+
+    # Вопросительные — заметка
+    if t.endswith('?'):
+        return 'note'
+
+    # Короткий текст без маркеров — неизвестно, покажем меню
     return 'unknown'
+
+
+# ─── Сохранение по типу ───────────────────────────────────────────────────────
+def save_task(text: str) -> bool:
+    now = now_samara()
+    # Дата, Задача, Ответственный, Категория, Статус, %, Источник, Срок, Дата закрытия, Причина
+    return save_to_sheet('Задачи', [now, text, 'Виктория', '', '🆕 Новая', '', 'Telegram', '', '', ''])
+
+
+def save_idea(text: str) -> bool:
+    now = now_samara()
+    return save_to_sheet('Идеи', [now, text, '', '💡 Новая', ''])
+
+
+def save_note(text: str) -> bool:
+    now = now_samara()
+    return save_to_sheet('Заметки', [now, text])
+
+
+# ─── Клавиатура выбора категории ──────────────────────────────────────────────
+def category_keyboard(text: str) -> InlineKeyboardMarkup:
+    """Инлайн-меню: что сохранить?"""
+    # Передаём текст через callback_data (обрезаем до 50 символов для безопасности)
+    short = text[:50].replace('|', '')
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Задача",  callback_data=f"save|task|{short}"),
+            InlineKeyboardButton("💡 Идея",   callback_data=f"save|idea|{short}"),
+            InlineKeyboardButton("📝 Заметка", callback_data=f"save|note|{short}"),
+        ]
+    ])
+
+
+# ─── Handlers ─────────────────────────────────────────────────────────────────
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    context.user_data['chat_id'] = chat_id
+
+    # Ежедневный дайджест в 9:00 по Самаре
+    try:
+        context.job_queue.run_daily(
+            daily_digest,
+            time=datetime.strptime("09:00", "%H:%M").replace(tzinfo=SAMARA_TZ).timetz(),
+            chat_id=chat_id,
+            name=f"digest_{chat_id}",
+        )
+    except Exception as e:
+        logger.error(f"Job schedule error: {e}")
+
+    await update.message.reply_text(
+        "Привет! Я Фунтик 🐾\n\n"
+        "Просто напиши мне что угодно — я сама разберусь куда сохранить:\n\n"
+        "✅ *Задача* — «надо позвонить», «купить», «не забыть…»\n"
+        "💡 *Идея* — «хочу попробовать», «а что если…»\n"
+        "📝 *Заметка* — «запомни», «важно», любая мысль\n\n"
+        "Если не пойму — спрошу сама 👇",
+        parse_mode="Markdown"
+    )
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    now = datetime.now().strftime('%d.%m.%Y %H:%M')
     category = classify(text)
 
-    if category == 'mac':
-        await handle_mac_command(update, text.lower())
-        return
+    if category == 'task':
+        ok = save_task(text)
+        msg = f"✅ Задача записана:\n_{text}_" if ok else "❌ Не удалось сохранить, попробуй ещё раз"
+        await update.message.reply_text(msg, parse_mode="Markdown")
 
     elif category == 'idea':
-        save_to_sheet('Идеи', [now, text, '', '💡 Новая', ''])
-        await update.message.reply_text(
-            f"💡 Записала идею:\n_{text}_\n\nКогда планируешь внедрить?\n"
-            "Ответь: *срочно*, *на неделе*, *в месяце* или *когда-нибудь*",
-            parse_mode="Markdown"
-        )
-        context.user_data['last_idea'] = text
-        context.user_data['waiting_deadline'] = True
-
-    elif category == 'task':
-        save_to_sheet('Задачи', [now, text, '🆕 Новая', 'Бот'])
-        await update.message.reply_text(f"✅ Задача записана:\n_{text}_", parse_mode="Markdown")
+        ok = save_idea(text)
+        msg = f"💡 Идея сохранена:\n_{text}_" if ok else "❌ Не удалось сохранить"
+        await update.message.reply_text(msg, parse_mode="Markdown")
 
     elif category == 'note':
-        save_to_sheet('Заметки', [now, text])
-        await update.message.reply_text(f"📝 Заметка сохранена:\n_{text}_", parse_mode="Markdown")
-
-    elif context.user_data.get('waiting_deadline'):
-        # Ответ на вопрос о сроке идеи
-        deadlines = {
-            'срочно': (datetime.now() + timedelta(days=2)).strftime('%d.%m.%Y'),
-            'на неделе': (datetime.now() + timedelta(days=7)).strftime('%d.%m.%Y'),
-            'в месяце': (datetime.now() + timedelta(days=30)).strftime('%d.%m.%Y'),
-            'когда-нибудь': 'Без срока',
-        }
-        t = text.lower()
-        for key, deadline in deadlines.items():
-            if key in t:
-                idea = context.user_data.get('last_idea', '')
-                try:
-                    ws = get_sheet().worksheet('Идеи')
-                    records = ws.get_all_values()
-                    for i, row in enumerate(reversed(records)):
-                        if idea in row:
-                            ws.update_cell(len(records) - i, 5, deadline)
-                            break
-                except Exception as e:
-                    logger.error(e)
-                context.user_data['waiting_deadline'] = False
-                await update.message.reply_text(f"✅ Срок поставлен: *{deadline}*", parse_mode="Markdown")
-                return
-        await update.message.reply_text("Напиши: *срочно*, *на неделе*, *в месяце* или *когда-нибудь*", parse_mode="Markdown")
+        ok = save_note(text)
+        msg = f"📝 Заметка сохранена:\n_{text}_" if ok else "❌ Не удалось сохранить"
+        await update.message.reply_text(msg, parse_mode="Markdown")
 
     else:
-        # Не понял — сохраняем как заметку
-        save_to_sheet('Заметки', [now, text])
-        await update.message.reply_text(f"📝 Сохранила как заметку:\n_{text}_", parse_mode="Markdown")
+        # Не понял — показываем меню
+        # Сохраняем полный текст в user_data (callback_data ограничена по длине)
+        context.user_data['pending_text'] = text
+        await update.message.reply_text(
+            f"Куда сохранить это?\n\n_«{text[:100]}»_",
+            parse_mode="Markdown",
+            reply_markup=category_keyboard(text)
+        )
 
 
-async def handle_mac_command(update, text):
-    if os.name != 'posix' or not os.path.exists('/usr/bin/osascript'):
-        await update.message.reply_text("🖥 Mac-команды работают только когда бот запущен на твоём компьютере. Сейчас бот на сервере — эта функция недоступна.")
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split('|')
+    if len(data) < 2:
         return
 
-    if 'скриншот' in text:
-        path = os.path.expanduser("~/Desktop/screenshot.png")
-        subprocess.run(["screencapture", "-x", path])
-        with open(path, "rb") as photo:
-            await update.message.reply_photo(photo, caption="📸 Готово!")
+    action, cat = data[0], data[1]
+    # Берём полный текст из user_data (там он без обрезки)
+    text = context.user_data.get('pending_text', data[2] if len(data) > 2 else "")
 
-    elif 'открой' in text or 'запусти' in text:
-        app = text.replace('открой', '').replace('запусти', '').strip()
-        app_map = {'зум': 'zoom.us', 'zoom': 'zoom.us', 'телеграм': 'Telegram',
-                   'хром': 'Google Chrome', 'chrome': 'Google Chrome',
-                   'заметки': 'Notes', 'музыка': 'Music', 'spotify': 'Spotify'}
-        app_name = app_map.get(app, app)
-        result = subprocess.run(["open", "-a", app_name], capture_output=True, text=True)
-        if result.returncode == 0:
-            await update.message.reply_text(f"✅ Открыла {app_name}!")
+    if action == 'save':
+        if cat == 'task':
+            ok = save_task(text)
+            msg = f"✅ Задача записана:\n_{text[:100]}_" if ok else "❌ Ошибка сохранения"
+        elif cat == 'idea':
+            ok = save_idea(text)
+            msg = f"💡 Идея сохранена:\n_{text[:100]}_" if ok else "❌ Ошибка сохранения"
         else:
-            await update.message.reply_text(f"❌ Не нашла приложение: {app}")
+            ok = save_note(text)
+            msg = f"📝 Заметка сохранена:\n_{text[:100]}_" if ok else "❌ Ошибка сохранения"
 
-    elif 'громкость' in text:
-        nums = [s for s in text.split() if s.isdigit()]
-        if nums:
-            vol = max(0, min(100, int(nums[0])))
-            subprocess.run(["osascript", "-e", f"set volume output volume {vol}"])
-            await update.message.reply_text(f"🔊 Громкость: {vol}%")
-        else:
-            result = subprocess.run(["osascript", "-e", "output volume of (get volume settings)"],
-                                    capture_output=True, text=True)
-            await update.message.reply_text(f"🔊 Текущая громкость: {result.stdout.strip()}%")
-
-    elif 'батарея' in text or 'заряд' in text:
-        result = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True)
-        for line in result.stdout.split("\n"):
-            if "%" in line:
-                await update.message.reply_text(f"🔋 {line.strip()}")
-                break
-
-    elif 'время' in text or 'дата' in text:
-        await update.message.reply_text(f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M')}")
-
-    elif 'ссылка' in text:
-        result = subprocess.run(
-            ["osascript", "-e", 'tell application "Google Chrome" to get URL of active tab of front window'],
-            capture_output=True, text=True)
-        await update.message.reply_text(f"🌐 {result.stdout.strip()}" if result.returncode == 0 else "❌ Chrome не открыт")
-
-    elif 'все вкладки' in text:
-        script = 'tell application "Google Chrome"\nset r to ""\nrepeat with w in windows\nrepeat with t in tabs of w\nset r to r & (title of t) & "\\n"\nend repeat\nend repeat\nreturn r\nend tell'
-        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-        await update.message.reply_text(f"🌐 Открытые вкладки:\n\n{result.stdout.strip()}")
-
-    elif 'спи' in text or 'спящий' in text:
-        await update.message.reply_text("😴 Ухожу в сон...")
-        subprocess.Popen(["osascript", "-e", 'tell application "System Events" to sleep'])
-
-    elif 'пауза' in text:
-        subprocess.run(["osascript", "-e", 'tell application "Music" to pause'])
-        await update.message.reply_text("⏸ Пауза")
-
-    elif 'играй' in text:
-        subprocess.run(["osascript", "-e", 'tell application "Music" to play'])
-        await update.message.reply_text("▶️ Играет!")
+        await query.edit_message_text(msg, parse_mode="Markdown")
+        context.user_data.pop('pending_text', None)
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Голосовые пока не поддерживаются — напиши текстом, всё сохраню!")
+    await update.message.reply_text("🎙 Голосовые пока не поддерживаются — напиши текстом!")
 
 
-async def weekly_review(context):
+# ─── Ежедневный дайджест ──────────────────────────────────────────────────────
+async def daily_digest(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.job.chat_id
     try:
-        ws = get_sheet().worksheet('Идеи')
-        records = ws.get_all_values()[1:]
-        new_ideas = [r for r in records if '💡 Новая' in r]
-        if not new_ideas:
+        ws = get_sheet().worksheet('Задачи')
+        rows = [r for r in ws.get_all_values()[1:] if len(r) > 1 and r[1].strip()]
+
+        if not rows:
+            await context.bot.send_message(chat_id=chat_id,
+                text="☀️ Доброе утро! Задач пока нет — отличный день чтобы начать 🎯")
             return
-        text = "🗓 *Обзор идей на неделю*\n\n"
-        for i, row in enumerate(new_ideas[:10], 1):
-            deadline = row[4] if len(row) > 4 and row[4] else 'без срока'
-            text += f"{i}. {row[1]} — _{deadline}_\n"
-        text += "\nЧто берёшь в работу? Напиши мне!"
-        await context.bot.send_message(chat_id=context.job.chat_id, text=text, parse_mode="Markdown")
+
+        overdue, active, new_tasks = [], [], []
+        today = datetime.now(SAMARA_TZ).date()
+
+        for r in rows:
+            status  = r[4] if len(r) > 4 else ''
+            task    = r[1] if len(r) > 1 else ''
+            deadline_str = r[7] if len(r) > 7 else ''
+
+            if '✅' in status:
+                continue  # пропускаем завершённые
+
+            # Проверяем просроченность
+            is_overdue = False
+            if deadline_str:
+                try:
+                    dl = datetime.strptime(deadline_str.strip(), '%d.%m.%Y').date()
+                    if dl < today:
+                        is_overdue = True
+                except Exception:
+                    pass
+
+            if is_overdue or '🔴' in status:
+                overdue.append((task, deadline_str))
+            elif '⚡' in status:
+                active.append((task, deadline_str))
+            else:
+                new_tasks.append((task, deadline_str))
+
+        # Формируем сообщение
+        now_str = datetime.now(SAMARA_TZ).strftime('%d.%m.%Y')
+        text = f"☀️ *Доброе утро! Задачи на {now_str}*\n\n"
+
+        total_open = len(overdue) + len(active) + len(new_tasks)
+        text += f"Всего открытых: *{total_open}*\n\n"
+
+        if overdue:
+            text += f"🔴 *Просрочено ({len(overdue)}):*\n"
+            for t, dl in overdue[:5]:
+                dl_txt = f" (до {dl})" if dl else ""
+                text += f"  • {t[:50]}{dl_txt}\n"
+            text += "\n"
+
+        if active:
+            text += f"⚡ *В работе ({len(active)}):*\n"
+            for t, dl in active[:5]:
+                dl_txt = f" (до {dl})" if dl else ""
+                text += f"  • {t[:50]}{dl_txt}\n"
+            text += "\n"
+
+        if new_tasks:
+            text += f"🆕 *Новые ({len(new_tasks)}):*\n"
+            for t, dl in new_tasks[:5]:
+                dl_txt = f" (до {dl})" if dl else ""
+                text += f"  • {t[:50]}{dl_txt}\n"
+
+        text += "\nХорошего дня! 🚀"
+
+        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+
     except Exception as e:
-        logger.error(e)
+        logger.error(f"Digest error: {e}")
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    context.job_queue.run_daily(weekly_review, time=datetime.strptime("09:00", "%H:%M").time(),
-                                 days=(0,), chat_id=chat_id, name=str(chat_id))
+# ─── Команды ─────────────────────────────────────────────────────────────────
+async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручной вызов дайджеста /tasks"""
+    # Имитируем job для вызова daily_digest вручную
+    class FakeJob:
+        chat_id = update.effective_chat.id
+    class FakeContext:
+        job = FakeJob()
+        bot = context.bot
+    await daily_digest(FakeContext())
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Просто пиши или отправляй голосовые — я сама разберусь что сделать:\n\n"
-        "💡 Идея → сохраню в трекер идей\n"
-        "✅ Задача → запишу в список задач\n"
-        "📝 Заметка → сохраню\n"
-        "🖥 Команда → выполню на Mac\n\n"
-        "Никаких специальных команд не нужно!"
+        "🐾 *Фунтик умеет:*\n\n"
+        "Просто напиши текст — я пойму куда сохранить:\n\n"
+        "✅ *Задача* — «надо», «нужно», «купить», «не забыть»...\n"
+        "💡 *Идея* — «хочу попробовать», «а что если»...\n"
+        "📝 *Заметка* — «запомни», «важно», мысли...\n\n"
+        "Если не угадаю — появится меню выбора 👇\n\n"
+        "*Команды:*\n"
+        "/tasks — показать задачи прямо сейчас\n"
+        "/help — эта справка\n\n"
+        "📬 Каждое утро в 9:00 пришлю сводку по задачам",
+        parse_mode="Markdown"
     )
 
 
+# ─── Запуск ───────────────────────────────────────────────────────────────────
 def main():
-    import os
     proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
     if proxy:
         from telegram.request import HTTPXRequest
         app = Application.builder().token(BOT_TOKEN).request(HTTPXRequest(proxy=proxy)).build()
     else:
         app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.VIDEO, handle_audio))
+
+    app.add_handler(CommandHandler("start",  start))
+    app.add_handler(CommandHandler("tasks",  cmd_tasks))
+    app.add_handler(CommandHandler("help",   cmd_help))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.VIDEO, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print("✅ Бот запущен!")
+
+    print("✅ Фунтик запущен!")
     app.run_polling()
 
 
