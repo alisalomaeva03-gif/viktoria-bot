@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Бот Фунтик — умный ассистент Виктории
-Задачи / Идеи / Заметки + управление задачами + ежедневный дайджест 9:00 Самара
+Задачи / Идеи / Заметки + управление + ежедневный дайджест 9:00 Самара
 """
 
 import os
@@ -63,8 +63,17 @@ TASK_QUERY_WORDS = [
     'что в работе', 'задачи на сегодня', 'что надо сделать',
     'текущие задачи', 'активные задачи', 'что там по задачам',
 ]
-
-DELETE_WORDS = ['удали задачу', 'удалить задачу', 'убери задачу', 'удали таск']
+IDEA_QUERY_WORDS = [
+    'мои идеи', 'список идей', 'покажи идеи', 'какие идеи',
+    'что за идеи', 'все идеи', 'идеи',
+]
+NOTE_QUERY_WORDS = [
+    'мои заметки', 'список заметок', 'покажи заметки', 'какие заметки',
+    'все заметки', 'заметки',
+]
+DELETE_TASK_WORDS  = ['удали задачу',  'удалить задачу',  'убери задачу']
+DELETE_IDEA_WORDS  = ['удали идею',    'удалить идею',    'убери идею']
+DELETE_NOTE_WORDS  = ['удали заметку', 'удалить заметку', 'убери заметку']
 
 TASK_WORDS = [
     'надо', 'нужно', 'сделать', 'позвонить', 'написать', 'отправить',
@@ -74,19 +83,16 @@ TASK_WORDS = [
     'починить', 'разобраться', 'решить', 'завершить', 'доделать',
     'задача', 'поставь задачу',
 ]
-
 IDEA_WORDS = [
     'идея', 'хочу попробовать', 'а что если', 'было бы круто',
     'можно было бы', 'думаю запустить', 'хочу создать', 'хочу сделать',
     'придумала', 'придумал', 'интересно попробовать', 'а вдруг',
-    'хочу запустить', 'мечтаю', 'было бы здорово', 'а если попробовать',
+    'хочу запустить', 'мечтаю', 'было бы здорово',
 ]
-
 NOTE_WORDS = [
     'запомни', 'запиши', 'заметка', 'зафиксируй', 'сохрани',
     'важно', 'отметь', 'на заметку', 'записать мысль', 'мысль',
 ]
-
 DEADLINE_WORDS = [
     'сегодня', 'завтра', 'послезавтра', 'до ', 'к ', 'через ',
     'в пятницу', 'в субботу', 'в воскресенье', 'в понедельник',
@@ -97,140 +103,179 @@ DEADLINE_WORDS = [
 def classify(text: str) -> str:
     t = text.lower().strip()
 
-    # Удаление задачи
-    if any(w in t for w in DELETE_WORDS):
-        return 'delete_task'
-
-    # Запрос списка
-    if any(w in t for w in TASK_QUERY_WORDS):
-        return 'query_tasks'
-
-    if any(w in t for w in NOTE_WORDS):
-        return 'note'
-    if any(w in t for w in IDEA_WORDS):
-        return 'idea'
-    if any(w in t for w in TASK_WORDS):
-        return 'task'
-    if any(w in t for w in DEADLINE_WORDS):
-        return 'task'
-    if t.endswith('?'):
-        return 'note'
-
+    if any(w in t for w in DELETE_TASK_WORDS):  return 'delete_task'
+    if any(w in t for w in DELETE_IDEA_WORDS):  return 'delete_idea'
+    if any(w in t for w in DELETE_NOTE_WORDS):  return 'delete_note'
+    if any(w in t for w in TASK_QUERY_WORDS):   return 'query_tasks'
+    if any(w in t for w in IDEA_QUERY_WORDS):   return 'query_ideas'
+    if any(w in t for w in NOTE_QUERY_WORDS):   return 'query_notes'
+    if any(w in t for w in NOTE_WORDS):         return 'note'
+    if any(w in t for w in IDEA_WORDS):         return 'idea'
+    if any(w in t for w in TASK_WORDS):         return 'task'
+    if any(w in t for w in DEADLINE_WORDS):     return 'task'
+    if t.endswith('?'):                          return 'note'
     return 'unknown'
 
 
 # ─── Сохранение ──────────────────────────────────────────────────────────────
 def save_task(text: str) -> bool:
-    now = now_samara()
-    return save_to_sheet('Задачи', [now, text, 'Виктория', '', '🆕 Новая', '', 'Telegram', '', '', ''])
-
+    return save_to_sheet('Задачи',
+        [now_samara(), text, 'Виктория', '', '🆕 Новая', '', 'Telegram', '', '', ''])
 
 def save_idea(text: str) -> bool:
-    now = now_samara()
-    return save_to_sheet('Идеи', [now, text, '💡 Новая', '🟡 Средний', '', ''])
-
+    return save_to_sheet('Идеи',
+        [now_samara(), text, '💡 Новая', '🟡 Средний', '', ''])
 
 def save_note(text: str) -> bool:
-    now = now_samara()
-    return save_to_sheet('Заметки', [now, text, '', 'Telegram', ''])
+    return save_to_sheet('Заметки',
+        [now_samara(), text, '', 'Telegram', ''])
 
 
-# ─── Получение активных задач с индексами строк ───────────────────────────────
+# ─── Загрузка данных из листов ───────────────────────────────────────────────
 def load_active_tasks():
-    """
-    Возвращает список (sheet_row_1indexed, row_data) только незавершённых задач.
-    sheet_row — реальный номер строки в таблице (1-indexed, строка 1 = шапка).
-    """
-    ws   = get_sheet().worksheet('Задачи')
-    all_rows = ws.get_all_values()
+    """(row_1indexed, row_data) — только незавершённые задачи"""
+    ws = get_sheet().worksheet('Задачи')
     result = []
-    for i, r in enumerate(all_rows[1:], start=2):   # start=2: строка 1 — шапка
+    for i, r in enumerate(ws.get_all_values()[1:], start=2):
+        if len(r) > 1 and r[1].strip() and '✅' not in (r[4] if len(r) > 4 else ''):
+            result.append((i, r))
+    return result
+
+def load_ideas():
+    """(row_1indexed, row_data) — все идеи кроме отклонённых"""
+    ws = get_sheet().worksheet('Идеи')
+    result = []
+    for i, r in enumerate(ws.get_all_values()[1:], start=2):
+        if len(r) > 1 and r[1].strip() and '🗑' not in (r[2] if len(r) > 2 else ''):
+            result.append((i, r))
+    return result
+
+def load_notes():
+    """(row_1indexed, row_data) — все заметки"""
+    ws = get_sheet().worksheet('Заметки')
+    result = []
+    for i, r in enumerate(ws.get_all_values()[1:], start=2):
         if len(r) > 1 and r[1].strip():
-            status = r[4] if len(r) > 4 else ''
-            if '✅' not in status:
-                result.append((i, r))
+            result.append((i, r))
     return result
 
 
-# ─── Показ задач с кнопками управления ───────────────────────────────────────
-async def send_tasks_with_controls(send_fn, active_rows):
-    """
-    Отправляет одно сообщение: список задач + кнопки управления под каждой.
-    send_fn — корутина для отправки (update.message.reply_text или query.edit_message_text).
-    """
-    today = datetime.now(SAMARA_TZ).date()
+# ─── Удаление по названию ────────────────────────────────────────────────────
+def delete_row_by_name(sheet_name: str, name: str, col: int = 1) -> tuple[bool, str]:
+    """Ищет строку по совпадению в колонке col (0-indexed), удаляет её."""
+    try:
+        ws = get_sheet().worksheet(sheet_name)
+        name_lower = name.lower().strip()
+        for i, r in enumerate(ws.get_all_values()[1:], start=2):
+            if len(r) > col and name_lower in r[col].lower():
+                found = r[col]
+                ws.delete_rows(i)
+                return True, found
+        return False, name
+    except Exception as e:
+        logger.error(f"delete_row_by_name [{sheet_name}]: {e}")
+        return False, name
 
-    if not active_rows:
-        await send_fn("✨ Все задачи выполнены! Напиши мне что-нибудь новое 🎯")
+
+# ─── Отправка списков с кнопками ─────────────────────────────────────────────
+async def send_tasks_with_controls(send_fn, rows):
+    today = datetime.now(SAMARA_TZ).date()
+    if not rows:
+        await send_fn("✨ Задач нет! Напиши что нужно сделать.")
         return
 
     now_str = datetime.now(SAMARA_TZ).strftime('%d.%m.%Y')
-    text = f"📋 *Задачи на {now_str}* — всего открытых: *{len(active_rows)}*\n\n"
-
+    text = f"📋 *Задачи на {now_str}* — открытых: *{len(rows)}*\n\n"
     keyboard = []
-    for i, (row_idx, r) in enumerate(active_rows[:15], 1):
-        task     = r[1] if len(r) > 1 else ''
+
+    for i, (row_idx, r) in enumerate(rows[:15], 1):
         status   = r[4] if len(r) > 4 else ''
         deadline = r[7] if len(r) > 7 else ''
+        task     = r[1][:50] if len(r) > 1 else ''
 
-        # Эмодзи статуса
-        if '🔴' in status:
-            s_ico = '🔴'
-        elif '⚡' in status:
-            s_ico = '⚡'
-        elif '⏸' in status:
-            s_ico = '⏸'
-        else:
-            s_ico = '🆕'
-
-        # Просрочена?
+        ico = '🔴' if '🔴' in status else '⚡' if '⚡' in status else '⏸' if '⏸' in status else '🆕'
         if deadline:
             try:
-                dl = datetime.strptime(deadline.strip(), '%d.%m.%Y').date()
-                if dl < today and '🔴' not in status:
-                    s_ico = '🔴'
+                if datetime.strptime(deadline.strip(), '%d.%m.%Y').date() < today:
+                    ico = '🔴'
             except Exception:
                 pass
 
-        dl_text = f" _(до {deadline})_" if deadline else ''
-        text += f"{i}. {s_ico} {task[:50]}{dl_text}\n"
-
-        # Кнопки для этой задачи
+        dl = f" _(до {deadline})_" if deadline else ''
+        text += f"{i}. {ico} {task}{dl}\n"
         keyboard.append([
-            InlineKeyboardButton(f"{i} ✅ Готово",   callback_data=f"ta|done|{row_idx}"),
-            InlineKeyboardButton(f"{i} ⚡ В работе", callback_data=f"ta|work|{row_idx}"),
-            InlineKeyboardButton(f"{i} 🗑 Удалить",  callback_data=f"ta|del|{row_idx}"),
+            InlineKeyboardButton(f"{i} ✅", callback_data=f"ta|done|{row_idx}"),
+            InlineKeyboardButton(f"{i} ⚡", callback_data=f"ta|work|{row_idx}"),
+            InlineKeyboardButton(f"{i} 🗑", callback_data=f"ta|del|{row_idx}"),
         ])
 
-    if len(active_rows) > 15:
-        text += f"\n_...и ещё {len(active_rows) - 15} задач_"
-
-    text += "\n\nНажми кнопку чтобы изменить статус или удалить:"
+    if len(rows) > 15:
+        text += f"\n_...ещё {len(rows)-15}_"
+    text += "\n\n✅ готово  ⚡ в работе  🗑 удалить"
 
     await send_fn(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-# ─── Удаление задачи по названию ─────────────────────────────────────────────
-def delete_task_by_name(name: str) -> tuple[bool, str]:
-    """
-    Ищет задачу по совпадению названия (регистр не важен).
-    Возвращает (успех, название задачи или сообщение об ошибке).
-    """
-    try:
-        ws = get_sheet().worksheet('Задачи')
-        rows = ws.get_all_values()
-        name_lower = name.lower().strip()
+async def send_ideas_with_controls(send_fn, rows):
+    if not rows:
+        await send_fn("💡 Идей пока нет! Напиши что хочешь попробовать.")
+        return
 
-        for i, r in enumerate(rows[1:], start=2):
-            if len(r) > 1 and name_lower in r[1].lower():
-                task_name = r[1]
-                ws.delete_rows(i)
-                return True, task_name
+    text = f"💡 *Идеи* — всего: *{len(rows)}*\n\n"
+    keyboard = []
 
-        return False, name
-    except Exception as e:
-        logger.error(f"delete_task_by_name error: {e}")
-        return False, name
+    STATUS_ICO = {'💡 Новая': '💡', '⚡ В разработке': '⚡', '✅ Запущена': '✅'}
+
+    for i, (row_idx, r) in enumerate(rows[:15], 1):
+        idea     = r[1][:50] if len(r) > 1 else ''
+        status   = r[2] if len(r) > 2 else '💡 Новая'
+        priority = r[3] if len(r) > 3 else ''
+        ico = STATUS_ICO.get(status, '💡')
+        prio = f" _{priority}_" if priority else ''
+        text += f"{i}. {ico} {idea}{prio}\n"
+        keyboard.append([
+            InlineKeyboardButton(f"{i} ✅ Запущена",     callback_data=f"ia|launch|{row_idx}"),
+            InlineKeyboardButton(f"{i} ⚡ В разработке", callback_data=f"ia|work|{row_idx}"),
+            InlineKeyboardButton(f"{i} 🗑 Удалить",      callback_data=f"ia|del|{row_idx}"),
+        ])
+
+    if len(rows) > 15:
+        text += f"\n_...ещё {len(rows)-15}_"
+    text += "\n\n✅ запустить  ⚡ в разработку  🗑 удалить"
+
+    await send_fn(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def send_notes_with_controls(send_fn, rows):
+    if not rows:
+        await send_fn("📝 Заметок пока нет! Напиши «запомни …»")
+        return
+
+    text = f"📝 *Заметки* — всего: *{len(rows)}*\n\n"
+    keyboard = []
+
+    for i, (row_idx, r) in enumerate(rows[:15], 1):
+        note = r[1][:60] if len(r) > 1 else ''
+        date = r[0][:10] if len(r) > 0 else ''
+        text += f"{i}. {note} _({date})_\n"
+        keyboard.append([
+            InlineKeyboardButton(f"{i} 🗑 Удалить", callback_data=f"no|del|{row_idx}"),
+        ])
+
+    if len(rows) > 15:
+        text += f"\n_...ещё {len(rows)-15}_"
+
+    await send_fn(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+# ─── Хелпер: извлечь название после триггера ─────────────────────────────────
+def extract_name(text: str, triggers: list[str]) -> str:
+    t = text.lower()
+    for trigger in triggers:
+        if trigger in t:
+            idx = t.index(trigger) + len(trigger)
+            return text[idx:].strip(' :«»"\'')
+    return ''
 
 
 # ─── Handlers ─────────────────────────────────────────────────────────────────
@@ -249,75 +294,77 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! Я Фунтик 🐾\n\n"
         "Напиши что угодно — сама разберусь куда сохранить:\n\n"
-        "✅ *Задача* — «надо позвонить», «купить», «не забыть…»\n"
-        "💡 *Идея* — «хочу попробовать», «а что если…»\n"
-        "📝 *Заметка* — «запомни», «важно», любая мысль\n\n"
-        "📋 *Управление задачами:*\n"
-        "— «какие задачи» — список с кнопками ✅ ⚡ 🗑\n"
-        "— «удали задачу [название]» — удалить по названию\n\n"
-        "Если не пойму — спрошу сама 👇",
+        "✅ *Задача* — «надо», «купить», «не забыть»\n"
+        "💡 *Идея* — «хочу попробовать», «а что если»\n"
+        "📝 *Заметка* — «запомни», «важно»\n\n"
+        "*Управление:*\n"
+        "— «какие задачи» / «мои идеи» / «мои заметки»\n"
+        "— «удали задачу/идею/заметку [название]»\n"
+        "/help — полная справка",
         parse_mode="Markdown"
     )
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    t    = text.lower()
+    text     = update.message.text.strip()
     category = classify(text)
 
-    # ── Показать задачи с кнопками управления ──
+    # ── Показать списки ──
     if category == 'query_tasks':
-        try:
-            active = load_active_tasks()
-            await send_tasks_with_controls(update.message.reply_text, active)
-        except Exception as e:
-            logger.error(e)
-            await update.message.reply_text("❌ Не удалось загрузить задачи")
+        await send_tasks_with_controls(update.message.reply_text, load_active_tasks())
+        return
+    if category == 'query_ideas':
+        await send_ideas_with_controls(update.message.reply_text, load_ideas())
+        return
+    if category == 'query_notes':
+        await send_notes_with_controls(update.message.reply_text, load_notes())
         return
 
-    # ── Удалить задачу по названию ──
+    # ── Удалить по названию ──
     if category == 'delete_task':
-        # Вырезаем название: всё после триггерного слова
-        task_name = text
-        for trigger in DELETE_WORDS:
-            if trigger in t:
-                idx = t.index(trigger) + len(trigger)
-                task_name = text[idx:].strip(' :«»"\'')
-                break
-
-        if not task_name:
-            await update.message.reply_text(
-                "Напиши как называется задача:\n_удали задачу [название]_",
-                parse_mode="Markdown")
-            return
-
-        ok, found = delete_task_by_name(task_name)
-        if ok:
-            await update.message.reply_text(f"🗑 Задача удалена:\n_{found}_", parse_mode="Markdown")
-        else:
-            await update.message.reply_text(
-                f"❌ Не нашла задачу с названием «{task_name}»\n"
-                "Попробуй написать часть названия или напиши «какие задачи» чтобы увидеть список.",
-                parse_mode="Markdown")
+        name = extract_name(text, DELETE_TASK_WORDS)
+        ok, found = delete_row_by_name('Задачи', name)
+        await update.message.reply_text(
+            f"🗑 Задача удалена:\n_{found}_" if ok
+            else f"❌ Не нашла задачу «{name}». Напиши «какие задачи» чтобы увидеть список.",
+            parse_mode="Markdown")
         return
 
-    # ── Сохранить задачу ──
+    if category == 'delete_idea':
+        name = extract_name(text, DELETE_IDEA_WORDS)
+        ok, found = delete_row_by_name('Идеи', name)
+        await update.message.reply_text(
+            f"🗑 Идея удалена:\n_{found}_" if ok
+            else f"❌ Не нашла идею «{name}». Напиши «мои идеи» чтобы увидеть список.",
+            parse_mode="Markdown")
+        return
+
+    if category == 'delete_note':
+        name = extract_name(text, DELETE_NOTE_WORDS)
+        ok, found = delete_row_by_name('Заметки', name)
+        await update.message.reply_text(
+            f"🗑 Заметка удалена:\n_{found}_" if ok
+            else f"❌ Не нашла заметку «{name}». Напиши «мои заметки» чтобы увидеть список.",
+            parse_mode="Markdown")
+        return
+
+    # ── Сохранить ──
     if category == 'task':
         ok = save_task(text)
         await update.message.reply_text(
-            f"✅ Задача записана:\n_{text}_" if ok else "❌ Не удалось сохранить",
+            f"✅ Задача записана:\n_{text}_" if ok else "❌ Ошибка сохранения",
             parse_mode="Markdown")
 
     elif category == 'idea':
         ok = save_idea(text)
         await update.message.reply_text(
-            f"💡 Идея сохранена:\n_{text}_" if ok else "❌ Не удалось сохранить",
+            f"💡 Идея сохранена:\n_{text}_" if ok else "❌ Ошибка сохранения",
             parse_mode="Markdown")
 
     elif category == 'note':
         ok = save_note(text)
         await update.message.reply_text(
-            f"📝 Заметка сохранена:\n_{text}_" if ok else "❌ Не удалось сохранить",
+            f"📝 Заметка сохранена:\n_{text}_" if ok else "❌ Ошибка сохранения",
             parse_mode="Markdown")
 
     else:
@@ -337,8 +384,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
-    parts = query.data.split('|')
+    parts  = query.data.split('|')
     action = parts[0]
 
     # ── Сохранить в нужную категорию ──
@@ -346,64 +392,97 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cat  = parts[1]
         text = context.user_data.get('pending_text', parts[2] if len(parts) > 2 else '')
         if cat == 'task':
-            ok = save_task(text)
-            msg = f"✅ Задача записана:\n_{text[:100]}_" if ok else "❌ Ошибка"
+            ok = save_task(text);  msg = f"✅ Задача:\n_{text[:100]}_"
         elif cat == 'idea':
-            ok = save_idea(text)
-            msg = f"💡 Идея сохранена:\n_{text[:100]}_" if ok else "❌ Ошибка"
+            ok = save_idea(text);  msg = f"💡 Идея:\n_{text[:100]}_"
         else:
-            ok = save_note(text)
-            msg = f"📝 Заметка сохранена:\n_{text[:100]}_" if ok else "❌ Ошибка"
+            ok = save_note(text);  msg = f"📝 Заметка:\n_{text[:100]}_"
+        if not ok: msg = "❌ Ошибка сохранения"
         await query.edit_message_text(msg, parse_mode="Markdown")
         context.user_data.pop('pending_text', None)
         return
 
-    # ── Управление задачей: ta|{действие}|{row} ──
-    if action == 'ta' and len(parts) >= 3:
-        act = parts[1]
-        try:
-            row_idx = int(parts[2])
-        except ValueError:
-            return
-
+    # ── Управление задачами: ta|{действие}|{row} ──
+    if action == 'ta' and len(parts) == 3:
+        act, row_idx = parts[1], int(parts[2])
         try:
             ws = get_sheet().worksheet('Задачи')
-            r  = ws.row_values(row_idx)
-            task_name = r[1] if len(r) > 1 else f"строка {row_idx}"
-
+            name = ws.row_values(row_idx)[1] if ws.row_values(row_idx) else f"строка {row_idx}"
             if act == 'done':
-                now = now_samara()
-                ws.update_cell(row_idx, 5, '✅ Готово')       # Статус
-                ws.update_cell(row_idx, 6, '100')              # % выполнения
-                ws.update_cell(row_idx, 9, now)                # Дата закрытия
-                msg = f"✅ Отмечено как выполнено:\n_{task_name}_"
-
+                ws.update_cell(row_idx, 5, '✅ Готово')
+                ws.update_cell(row_idx, 6, '100')
+                ws.update_cell(row_idx, 9, now_samara())
+                msg = f"✅ Выполнено:\n_{name}_"
             elif act == 'work':
                 ws.update_cell(row_idx, 5, '⚡ В работе')
                 ws.update_cell(row_idx, 6, '50')
-                msg = f"⚡ Переведено в работу:\n_{task_name}_"
-
+                msg = f"⚡ В работе:\n_{name}_"
             elif act == 'del':
                 ws.delete_rows(row_idx)
-                msg = f"🗑 Задача удалена:\n_{task_name}_"
-
+                msg = f"🗑 Удалено:\n_{name}_"
             else:
                 return
-
             await query.edit_message_text(msg, parse_mode="Markdown")
-
-            # Обновляем список задач после изменения
-            active = load_active_tasks()
-            if active:
+            # Обновить список
+            rows = load_active_tasks()
+            if rows:
+                chat_id = query.message.chat_id
                 await send_tasks_with_controls(
-                    lambda t, **kw: context.bot.send_message(
-                        chat_id=query.message.chat_id, text=t, **kw),
-                    active
-                )
-
+                    lambda t, **kw: context.bot.send_message(chat_id=chat_id, text=t, **kw), rows)
         except Exception as e:
-            logger.error(f"Task action error: {e}")
-            await query.edit_message_text("❌ Ошибка при обновлении задачи")
+            logger.error(f"ta callback: {e}")
+            await query.edit_message_text("❌ Ошибка обновления задачи")
+        return
+
+    # ── Управление идеями: ia|{действие}|{row} ──
+    if action == 'ia' and len(parts) == 3:
+        act, row_idx = parts[1], int(parts[2])
+        try:
+            ws = get_sheet().worksheet('Идеи')
+            name = ws.row_values(row_idx)[1] if ws.row_values(row_idx) else f"строка {row_idx}"
+            if act == 'launch':
+                ws.update_cell(row_idx, 3, '✅ Запущена')
+                msg = f"✅ Запущена:\n_{name}_"
+            elif act == 'work':
+                ws.update_cell(row_idx, 3, '⚡ В разработке')
+                msg = f"⚡ В разработке:\n_{name}_"
+            elif act == 'del':
+                ws.delete_rows(row_idx)
+                msg = f"🗑 Удалено:\n_{name}_"
+            else:
+                return
+            await query.edit_message_text(msg, parse_mode="Markdown")
+            rows = load_ideas()
+            if rows:
+                chat_id = query.message.chat_id
+                await send_ideas_with_controls(
+                    lambda t, **kw: context.bot.send_message(chat_id=chat_id, text=t, **kw), rows)
+        except Exception as e:
+            logger.error(f"ia callback: {e}")
+            await query.edit_message_text("❌ Ошибка обновления идеи")
+        return
+
+    # ── Управление заметками: no|del|{row} ──
+    if action == 'no' and len(parts) == 3:
+        act, row_idx = parts[1], int(parts[2])
+        try:
+            ws = get_sheet().worksheet('Заметки')
+            name = ws.row_values(row_idx)[1] if ws.row_values(row_idx) else f"строка {row_idx}"
+            if act == 'del':
+                ws.delete_rows(row_idx)
+                msg = f"🗑 Заметка удалена:\n_{name}_"
+            else:
+                return
+            await query.edit_message_text(msg, parse_mode="Markdown")
+            rows = load_notes()
+            if rows:
+                chat_id = query.message.chat_id
+                await send_notes_with_controls(
+                    lambda t, **kw: context.bot.send_message(chat_id=chat_id, text=t, **kw), rows)
+        except Exception as e:
+            logger.error(f"no callback: {e}")
+            await query.edit_message_text("❌ Ошибка удаления заметки")
+        return
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -414,83 +493,78 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def daily_digest(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
     try:
-        active = load_active_tasks()
-        today  = datetime.now(SAMARA_TZ).date()
+        rows  = load_active_tasks()
+        today = datetime.now(SAMARA_TZ).date()
 
-        if not active:
+        if not rows:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="☀️ Доброе утро! Задач пока нет — отличный день 🎯")
+                text="☀️ Доброе утро! Задач нет — отличный день 🎯")
             return
 
         overdue, in_work, new_tasks = [], [], []
-        for _, r in active:
+        for _, r in rows:
             status   = r[4] if len(r) > 4 else ''
             task     = r[1] if len(r) > 1 else ''
             deadline = r[7] if len(r) > 7 else ''
-
-            is_late = False
+            is_late  = False
             if deadline:
                 try:
                     if datetime.strptime(deadline.strip(), '%d.%m.%Y').date() < today:
                         is_late = True
                 except Exception:
                     pass
-
             entry = (task, deadline)
-            if is_late or '🔴' in status:
-                overdue.append(entry)
-            elif '⚡' in status:
-                in_work.append(entry)
-            else:
-                new_tasks.append(entry)
-
-        now_str = datetime.now(SAMARA_TZ).strftime('%d.%m.%Y')
-        text = f"☀️ *Доброе утро! {now_str}*\nОткрытых задач: *{len(active)}*\n\n"
+            if is_late or '🔴' in status: overdue.append(entry)
+            elif '⚡' in status:          in_work.append(entry)
+            else:                         new_tasks.append(entry)
 
         def fmt(lst):
             return '\n'.join(
                 f"  • {t[:50]}" + (f" _(до {dl})_" if dl else '')
-                for t, dl in lst[:5]
-            )
+                for t, dl in lst[:5])
 
-        if overdue:   text += f"🔴 *Просрочено ({len(overdue)}):*\n{fmt(overdue)}\n\n"
-        if in_work:   text += f"⚡ *В работе ({len(in_work)}):*\n{fmt(in_work)}\n\n"
-        if new_tasks: text += f"🆕 *Новые ({len(new_tasks)}):*\n{fmt(new_tasks)}\n\n"
-
+        now_str = datetime.now(SAMARA_TZ).strftime('%d.%m.%Y')
+        text = f"☀️ *Доброе утро! {now_str}*\nОткрытых задач: *{len(rows)}*\n\n"
+        if overdue:    text += f"🔴 *Просрочено ({len(overdue)}):*\n{fmt(overdue)}\n\n"
+        if in_work:    text += f"⚡ *В работе ({len(in_work)}):*\n{fmt(in_work)}\n\n"
+        if new_tasks:  text += f"🆕 *Новые ({len(new_tasks)}):*\n{fmt(new_tasks)}\n\n"
         text += "Хорошего дня! 🚀"
 
         await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
-
     except Exception as e:
         logger.error(f"Digest error: {e}")
 
 
 # ─── Команды ─────────────────────────────────────────────────────────────────
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        active = load_active_tasks()
-        await send_tasks_with_controls(update.message.reply_text, active)
-    except Exception as e:
-        logger.error(e)
-        await update.message.reply_text("❌ Не удалось загрузить задачи")
+    await send_tasks_with_controls(update.message.reply_text, load_active_tasks())
 
+async def cmd_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_ideas_with_controls(update.message.reply_text, load_ideas())
+
+async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_notes_with_controls(update.message.reply_text, load_notes())
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🐾 *Фунтик умеет:*\n\n"
         "*Сохранить:*\n"
-        "✅ Задача — «надо», «нужно», «купить», «не забыть»...\n"
+        "✅ Задача — «надо», «нужно», «купить»...\n"
         "💡 Идея — «хочу попробовать», «а что если»...\n"
-        "📝 Заметка — «запомни», «важно», мысли...\n\n"
-        "*Управлять задачами:*\n"
-        "— «какие задачи» — список с кнопками\n"
-        "— «удали задачу [название]» — удалить\n"
-        "— /tasks — то же самое\n\n"
-        "*Кнопки в списке:*\n"
-        "✅ Готово — отметить выполненной\n"
-        "⚡ В работе — взять в работу\n"
-        "🗑 Удалить — убрать из списка\n\n"
+        "📝 Заметка — «запомни», «важно»...\n\n"
+        "*Смотреть и управлять:*\n"
+        "— «какие задачи» или /tasks\n"
+        "— «мои идеи» или /ideas\n"
+        "— «мои заметки» или /notes\n\n"
+        "*Удалить:*\n"
+        "— «удали задачу [название]»\n"
+        "— «удали идею [название]»\n"
+        "— «удали заметку [текст]»\n\n"
+        "*Кнопки в списке задач:*\n"
+        "✅ выполнено  ⚡ в работе  🗑 удалить\n\n"
+        "*Кнопки в списке идей:*\n"
+        "✅ запустить  ⚡ в разработку  🗑 удалить\n\n"
         "📬 Дайджест каждый день в 9:00 по Самаре",
         parse_mode="Markdown"
     )
@@ -505,9 +579,11 @@ def main():
     else:
         app = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("tasks", cmd_tasks))
-    app.add_handler(CommandHandler("help",  cmd_help))
+    app.add_handler(CommandHandler("start",  start))
+    app.add_handler(CommandHandler("tasks",  cmd_tasks))
+    app.add_handler(CommandHandler("ideas",  cmd_ideas))
+    app.add_handler(CommandHandler("notes",  cmd_notes))
+    app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.VIDEO, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
