@@ -157,8 +157,42 @@ def save_file(file_type: str, name: str, description: str, file_id: str, source:
     return save_to_sheet('База',
         [now_samara(), file_type, name, description, file_id, source])
 
+def find_in_base(query: str) -> list:
+    """Ищет в листе «База» по названию или описанию."""
+    try:
+        ws = get_sheet().worksheet('База')
+        q = query.lower().strip()
+        results = []
+        for r in ws.get_all_values()[1:]:
+            if len(r) < 3 or not r[2].strip(): continue
+            name = r[2].lower()
+            desc = r[3].lower() if len(r) > 3 else ''
+            if q in name or q in desc:
+                results.append(r)
+        return results
+    except Exception as e:
+        logger.error(f"find_in_base: {e}")
+        return []
+
 
 URL_RE = re.compile(r'https?://\S+|www\.\S+')
+
+# Триггеры поиска в базе
+FIND_BASE_TRIGGERS = [
+    'пришли ссылку', 'найди ссылку', 'дай ссылку', 'покажи ссылку',
+    'пришли файл',   'найди файл',   'дай файл',   'покажи файл',
+    'найди документ','пришли документ','пришли фото','найди фото',
+    'найди в базе',  'что есть в базе',
+]
+
+def extract_find_query(text: str) -> str:
+    """Вытаскивает поисковый запрос после триггера."""
+    t = text.lower()
+    for trigger in sorted(FIND_BASE_TRIGGERS, key=len, reverse=True):
+        if trigger in t:
+            idx = t.index(trigger) + len(trigger)
+            return text[idx:].strip(' :«»"\'')
+    return ''
 
 
 # ─── Загрузка данных из листов ───────────────────────────────────────────────
@@ -338,17 +372,59 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
-    # Ссылки в тексте → «База»
+    # ── Ждём название для файла/ссылки ──
+    if context.user_data.get('pending_file'):
+        pending = context.user_data.pop('pending_file')
+        name = text[:200]
+        ok = save_file(pending['type'], name, pending['description'],
+                       pending['file_id'], pending['source'])
+        await update.message.reply_text(
+            f"{pending['type']} сохранено как:\n*{name}*" if ok
+            else "❌ Ошибка сохранения",
+            parse_mode="Markdown")
+        return
+
+    # ── Поиск в базе ──
+    t_low = text.lower()
+    if any(tr in t_low for tr in FIND_BASE_TRIGGERS):
+        query = extract_find_query(text)
+        if not query:
+            await update.message.reply_text(
+                "Что найти? Напиши: «пришли ссылку [название]»")
+            return
+        rows = find_in_base(query)
+        if not rows:
+            await update.message.reply_text(
+                f"🔍 Ничего не нашла по запросу «{query}».\n"
+                f"Напиши /files чтобы увидеть всё что есть.")
+            return
+        reply = f"🔍 Нашла по «{query}»:\n\n"
+        for r in rows[:5]:
+            typ  = r[1] if len(r) > 1 else ''
+            name = r[2] if len(r) > 2 else ''
+            desc = r[3] if len(r) > 3 else ''
+            date = r[0][:10] if len(r) > 0 else ''
+            # Если тип «Ссылка» — выводим саму ссылку кликабельно
+            if '🔗' in typ:
+                reply += f"🔗 [{name}]({name})"
+            else:
+                reply += f"{typ} *{name}*"
+            if desc: reply += f"\n_{desc[:80]}_"
+            reply += f" _({date})_\n\n"
+        await update.message.reply_text(reply, parse_mode="Markdown",
+                                        disable_web_page_preview=False)
+        return
+
+    # ── Ссылки в тексте → спрашиваем название ──
     links = _extract_links(text)
     if links:
-        # Сохраняем каждую ссылку; описание = остальной текст без ссылки
         description = URL_RE.sub('', text).strip(' \n-—|')
-        for url in links:
-            save_file('🔗 Ссылка', url[:260], description[:200], '', 'Telegram')
-        names = '\n'.join(f'• {u[:80]}' for u in links[:5])
-        await update.message.reply_text(
-            f"🔗 {'Ссылка сохранена' if len(links)==1 else f'{len(links)} ссылки сохранены'} в «Базу»:\n{names}",
-            parse_mode="Markdown")
+        url = links[0]  # берём первую ссылку
+        await _ask_name(update.message, context, {
+            'type': '🔗 Ссылка', 'default_name': url[:80],
+            'description': description[:200], 'file_id': '',
+            'source': 'Telegram'
+        })
         return
 
     category = classify(text)
@@ -430,6 +506,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     parts  = query.data.split('|')
     action = parts[0]
+
+    # ── База: сохранить без названия ──
+    if action == 'base' and len(parts) >= 2 and parts[1] == 'skip':
+        pending = context.user_data.pop('pending_file', None)
+        if pending:
+            ok = save_file(pending['type'], pending['default_name'],
+                           pending['description'], pending['file_id'], pending['source'])
+            await query.edit_message_text(
+                f"{pending['type']} сохранено как:\n*{pending['default_name'][:80]}*" if ok
+                else "❌ Ошибка сохранения",
+                parse_mode="Markdown")
+        return
 
     # ── Сохранить в нужную категорию ──
     if action == 'save' and len(parts) >= 2:
@@ -547,42 +635,53 @@ def _forwarded_from(msg) -> str:
     return 'Telegram'
 
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg    = update.message
-    photo  = msg.photo[-1]  # наибольшее разрешение
-    cap    = msg.caption or ''
-    source = _forwarded_from(msg)
-    ok = save_file('📷 Фото', 'Фото', cap[:200], photo.file_id, source)
+async def _ask_name(msg, context, pending: dict):
+    """Сохраняет pending в user_data и просит придумать название."""
+    context.user_data['pending_file'] = pending
+    skip_btn = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Сохранить без названия", callback_data="base|skip")
+    ]])
+    type_label = pending['type']
+    default    = pending['default_name']
     await msg.reply_text(
-        f"📷 Фото сохранено в «Базу»{f': _{cap[:60]}_' if cap else ''}" if ok
-        else "❌ Ошибка сохранения фото",
-        parse_mode="Markdown")
+        f"{type_label} получен(а)!\n\n"
+        f"Как назвать? Напиши название — потом сможешь найти по нему.\n"
+        f"_Сейчас: «{default[:60]}»_",
+        parse_mode="Markdown",
+        reply_markup=skip_btn)
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg   = update.message
+    photo = msg.photo[-1]
+    cap   = msg.caption or ''
+    await _ask_name(msg, context, {
+        'type': '📷 Фото', 'default_name': cap or 'Фото',
+        'description': cap[:200], 'file_id': photo.file_id,
+        'source': _forwarded_from(msg)
+    })
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg      = update.message
-    doc      = msg.document
-    name     = doc.file_name or 'Документ'
-    cap      = msg.caption or ''
-    source   = _forwarded_from(msg)
-    ok = save_file('📄 Документ', name[:200], cap[:200], doc.file_id, source)
-    await msg.reply_text(
-        f"📄 Документ сохранён в «Базу»: _{name[:60]}_" if ok
-        else "❌ Ошибка сохранения документа",
-        parse_mode="Markdown")
+    msg = update.message
+    doc = msg.document
+    cap = msg.caption or ''
+    await _ask_name(msg, context, {
+        'type': '📄 Документ', 'default_name': doc.file_name or 'Документ',
+        'description': cap[:200], 'file_id': doc.file_id,
+        'source': _forwarded_from(msg)
+    })
 
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg    = update.message
-    video  = msg.video
-    cap    = msg.caption or ''
-    source = _forwarded_from(msg)
-    name   = video.file_name or 'Видео'
-    ok = save_file('🎥 Видео', name[:200], cap[:200], video.file_id, source)
-    await msg.reply_text(
-        f"🎥 Видео сохранено в «Базу»{f': _{cap[:60]}_' if cap else ''}" if ok
-        else "❌ Ошибка сохранения видео",
-        parse_mode="Markdown")
+    msg   = update.message
+    video = msg.video
+    cap   = msg.caption or ''
+    await _ask_name(msg, context, {
+        'type': '🎥 Видео', 'default_name': cap or video.file_name or 'Видео',
+        'description': cap[:200], 'file_id': video.file_id,
+        'source': _forwarded_from(msg)
+    })
 
 
 def _extract_links(text: str) -> list[str]:
