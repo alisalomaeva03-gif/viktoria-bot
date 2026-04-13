@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 import json
 import logging
 import warnings
@@ -151,6 +152,13 @@ def save_idea(text: str) -> bool:
 def save_note(text: str) -> bool:
     return save_to_sheet('Заметки',
         [now_samara(), text, '', 'Telegram', ''])
+
+def save_file(file_type: str, name: str, description: str, file_id: str, source: str) -> bool:
+    return save_to_sheet('База',
+        [now_samara(), file_type, name, description, file_id, source])
+
+
+URL_RE = re.compile(r'https?://\S+|www\.\S+')
 
 
 # ─── Загрузка данных из листов ───────────────────────────────────────────────
@@ -328,7 +336,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text     = update.message.text.strip()
+    text = update.message.text.strip()
+
+    # Ссылки в тексте → «База»
+    links = _extract_links(text)
+    if links:
+        # Сохраняем каждую ссылку; описание = остальной текст без ссылки
+        description = URL_RE.sub('', text).strip(' \n-—|')
+        for url in links:
+            save_file('🔗 Ссылка', url[:260], description[:200], '', 'Telegram')
+        names = '\n'.join(f'• {u[:80]}' for u in links[:5])
+        await update.message.reply_text(
+            f"🔗 {'Ссылка сохранена' if len(links)==1 else f'{len(links)} ссылки сохранены'} в «Базу»:\n{names}",
+            parse_mode="Markdown")
+        return
+
     category = classify(text)
 
     # ── Показать списки ──
@@ -511,6 +533,62 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎙 Голосовые пока не поддерживаются — напиши текстом!")
 
 
+# ─── Медиафайлы и ссылки → «База» ────────────────────────────────────────────
+def _forwarded_from(msg) -> str:
+    """Имя источника при пересылке."""
+    if msg.forward_from:
+        fn = msg.forward_from.first_name or ''
+        ln = msg.forward_from.last_name or ''
+        return f"Telegram: {(fn + ' ' + ln).strip()}"
+    if msg.forward_from_chat:
+        return f"Канал: {msg.forward_from_chat.title or ''}"
+    if msg.forward_sender_name:
+        return f"Telegram: {msg.forward_sender_name}"
+    return 'Telegram'
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg    = update.message
+    photo  = msg.photo[-1]  # наибольшее разрешение
+    cap    = msg.caption or ''
+    source = _forwarded_from(msg)
+    ok = save_file('📷 Фото', 'Фото', cap[:200], photo.file_id, source)
+    await msg.reply_text(
+        f"📷 Фото сохранено в «Базу»{f': _{cap[:60]}_' if cap else ''}" if ok
+        else "❌ Ошибка сохранения фото",
+        parse_mode="Markdown")
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg      = update.message
+    doc      = msg.document
+    name     = doc.file_name or 'Документ'
+    cap      = msg.caption or ''
+    source   = _forwarded_from(msg)
+    ok = save_file('📄 Документ', name[:200], cap[:200], doc.file_id, source)
+    await msg.reply_text(
+        f"📄 Документ сохранён в «Базу»: _{name[:60]}_" if ok
+        else "❌ Ошибка сохранения документа",
+        parse_mode="Markdown")
+
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg    = update.message
+    video  = msg.video
+    cap    = msg.caption or ''
+    source = _forwarded_from(msg)
+    name   = video.file_name or 'Видео'
+    ok = save_file('🎥 Видео', name[:200], cap[:200], video.file_id, source)
+    await msg.reply_text(
+        f"🎥 Видео сохранено в «Базу»{f': _{cap[:60]}_' if cap else ''}" if ok
+        else "❌ Ошибка сохранения видео",
+        parse_mode="Markdown")
+
+
+def _extract_links(text: str) -> list[str]:
+    return URL_RE.findall(text)
+
+
 # ─── Ежедневный дайджест ──────────────────────────────────────────────────────
 async def daily_digest(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
@@ -568,6 +646,24 @@ async def cmd_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_notes_with_controls(update.message.reply_text, load_notes())
 
+async def cmd_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        ws   = get_sheet().worksheet('База')
+        rows = [r for r in ws.get_all_values()[1:] if len(r) > 2 and r[2].strip()]
+        if not rows:
+            await update.message.reply_text("📁 База пуста — перешли мне фото, документ или ссылку.")
+            return
+        text = f"📁 *База файлов* — всего: *{len(rows)}*\n\n"
+        for r in rows[-20:]:  # последние 20
+            date = r[0][:10] if len(r) > 0 else ''
+            typ  = r[1] if len(r) > 1 else ''
+            name = r[2][:60] if len(r) > 2 else ''
+            text += f"{typ} {name} _({date})_\n"
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"cmd_files: {e}")
+        await update.message.reply_text("❌ Ошибка загрузки базы")
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🐾 *Фунтик умеет:*\n\n"
@@ -587,6 +683,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ выполнено  ⚡ в работе  🗑 удалить\n\n"
         "*Кнопки в списке идей:*\n"
         "✅ запустить  ⚡ в разработку  🗑 удалить\n\n"
+        "*База файлов /files:*\n"
+        "📷 Фото — перешли фото или скрин\n"
+        "📄 Документ — перешли файл\n"
+        "🎥 Видео — перешли видео\n"
+        "🔗 Ссылка — отправь URL\n\n"
         "📬 Дайджест каждый день в 9:00 по Самаре",
         parse_mode="Markdown"
     )
@@ -605,9 +706,13 @@ def main():
     app.add_handler(CommandHandler("tasks",  cmd_tasks))
     app.add_handler(CommandHandler("ideas",  cmd_ideas))
     app.add_handler(CommandHandler("notes",  cmd_notes))
+    app.add_handler(CommandHandler("files",  cmd_files))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.VIDEO, handle_audio))
+    app.add_handler(MessageHandler(filters.PHOTO,    handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.VIDEO,    handle_video))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("✅ Фунтик запущен!")
